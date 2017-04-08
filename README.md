@@ -72,3 +72,8 @@ We highly recommend using either **Environment Variables** or **Instance Meta-da
 
 ## Contributing
 [Before contributing please check the contribution guidelines](https://github.com/LouiseMcMahon/nodebb-plugin-s3-uploads/blob/master/.github/CONTRIBUTING.md)
+
+
+## Credit
+
+This plugin is a folk from [LouiseMcMahon's nodebb-plugin-s3-uploads](https://github.com/LouiseMcMahon/nodebb-plugin-s3-uploads). Thanks for her great job.
