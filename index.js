@@ -1,6 +1,6 @@
 var Package = require("./package.json");
 
-var AWS = require("aws-sdk"),
+var qiniu = require("qiniu"),
 	mime = require("mime"),
 	uuid = require("uuid").v4,
 	fs = require("fs"),
@@ -17,14 +17,13 @@ var plugin = {}
 
 "use strict";
 
-var S3Conn = null;
+var qiniuConn = null;
 var settings = {
 	"accessKeyId": false,
 	"secretAccessKey": false,
-	"region": process.env.AWS_DEFAULT_REGION || "us-east-1",
-	"bucket": process.env.S3_UPLOADS_BUCKET || undefined,
-	"host": process.env.S3_UPLOADS_HOST || "s3.amazonaws.com",
-	"path": process.env.S3_UPLOADS_PATH || undefined
+	"bucket": process.env.QINIU_UPLOADS_BUCKET || undefined,
+	"host": process.env.QINIU_UPLOADS_HOST || "qiniu.com",
+	"path": process.env.QINIU_UPLOADS_PATH || undefined
 };
 
 var accessKeyIdFromDb = false;
@@ -58,39 +57,27 @@ function fetchSettings(callback) {
 		}
 
 		if (!newSettings.bucket) {
-			settings.bucket = process.env.S3_UPLOADS_BUCKET || "";
+			settings.bucket = process.env.QINIU_UPLOADS_BUCKET || "";
 		} else {
 			settings.bucket = newSettings.bucket;
 		}
 
 		if (!newSettings.host) {
-			settings.host = process.env.S3_UPLOADS_HOST || "";
+			settings.host = process.env.QINIU_UPLOADS_HOST || "";
 		} else {
 			settings.host = newSettings.host;
 		}
 
 		if (!newSettings.path) {
-			settings.path = process.env.S3_UPLOADS_PATH || "";
+			settings.path = process.env.QINIU_UPLOADS_PATH || "";
 		} else {
 			settings.path = newSettings.path;
 		}
 
-		if (!newSettings.region) {
-			settings.region = process.env.AWS_DEFAULT_REGION || "";
-		} else {
-			settings.region = newSettings.region;
-		}
-
 		if (settings.accessKeyId && settings.secretAccessKey) {
-			AWS.config.update({
+			qiniu.config.update({
 				accessKeyId: settings.accessKeyId,
 				secretAccessKey: settings.secretAccessKey
-			});
-		}
-
-		if (settings.region) {
-			AWS.config.update({
-				region: settings.region
 			});
 		}
 
@@ -100,12 +87,12 @@ function fetchSettings(callback) {
 	});
 }
 
-function S3() {
-	if (!S3Conn) {
-		S3Conn = new AWS.S3();
+function getQiniuConn() {
+	if (!qiniuConn) {
+		qiniuConn = new qiniu();
 	}
 
-	return S3Conn;
+	return qiniuConn;
 }
 
 function makeError(err) {
@@ -120,15 +107,15 @@ function makeError(err) {
 }
 
 plugin.activate = function (data) {
-	if (data.id === 'nodebb-plugin-s3-uploads') {
+	if (data.id === 'nodebb-plugin-qiniu-uploads') {
 		fetchSettings();
 	}
 
 };
 
 plugin.deactivate = function (data) {
-	if (data.id === 'nodebb-plugin-s3-uploads') {
-		S3Conn = null;
+	if (data.id === 'nodebb-plugin-qiniu-uploads') {
+		qiniuConn = null;
 	}
 };
 
@@ -137,12 +124,12 @@ plugin.load = function (params, callback) {
 		if (err) {
 			return winston.error(err.message);
 		}
-		var adminRoute = "/admin/plugins/s3-uploads";
+		var adminRoute = "/admin/plugins/qiniu-uploads";
 
 		params.router.get(adminRoute, params.middleware.applyCSRF, params.middleware.admin.buildHeader, renderAdmin);
 		params.router.get("/api" + adminRoute, params.middleware.applyCSRF, renderAdmin);
 
-		params.router.post("/api" + adminRoute + "/s3settings", s3settings);
+		params.router.post("/api" + adminRoute + "/qiniuSettings", qiniuSettings);
 		params.router.post("/api" + adminRoute + "/credentials", credentials);
 
 		callback();
@@ -162,22 +149,20 @@ function renderAdmin(req, res) {
 		host: settings.host,
 		path: settings.path,
 		forumPath: forumPath,
-		region: settings.region,
 		accessKeyId: (accessKeyIdFromDb && settings.accessKeyId) || "",
 		secretAccessKey: (accessKeyIdFromDb && settings.secretAccessKey) || "",
 		csrf: token
 	};
 
-	res.render("admin/plugins/s3-uploads", data);
+	res.render("admin/plugins/qiniu-uploads", data);
 }
 
-function s3settings(req, res, next) {
+function qiniuSettings(req, res, next) {
 	var data = req.body;
 	var newSettings = {
 		bucket: data.bucket || "",
 		host: data.host || "",
-		path: data.path || "",
-		region: data.region || ""
+		path: data.path || ""
 	};
 
 	saveSettings(newSettings, res, next);
@@ -231,7 +216,7 @@ plugin.uploadImage = function (data, callback) {
 		}
 
 		fs.readFile(image.path, function (err, buffer) {
-			uploadToS3(image.name, err, buffer, callback);
+			uploadToQiniu(image.name, err, buffer, callback);
 		});
 	}
 	else {
@@ -257,7 +242,7 @@ plugin.uploadImage = function (data, callback) {
 					buf = Buffer.concat([buf, d]);
 				});
 				stdout.on("end", function () {
-					uploadToS3(filename, null, buf, callback);
+					uploadToQiniu(filename, null, buf, callback);
 				});
 			});
 	}
@@ -281,46 +266,47 @@ plugin.uploadFile = function (data, callback) {
 	}
 
 	fs.readFile(file.path, function (err, buffer) {
-		uploadToS3(file.name, err, buffer, callback);
+		uploadToQiniu(file.name, err, buffer, callback);
 	});
 };
 
-function uploadToS3(filename, err, buffer, callback) {
+function uploadToQiniu(filename, err, buffer, callback) {
 	if (err) {
 		return callback(makeError(err));
 	}
 
-	var s3Path;
+	var qiniuPath;
 	if (settings.path && 0 < settings.path.length) {
-		s3Path = settings.path;
+		qiniuPath = settings.path;
 
-		if (!s3Path.match(/\/$/)) {
+		if (!qiniuPath.match(/\/$/)) {
 			// Add trailing slash
-			s3Path = s3Path + "/";
+			qiniuPath = qiniuPath + "/";
 		}
 	}
 	else {
-		s3Path = "/";
+		qiniuPath = "/";
 	}
 
-	var s3KeyPath = s3Path.replace(/^\//, ""); // S3 Key Path should not start with slash.
+	var qiniuKeyPath = qiniuPath.replace(/^\//, ""); // qiniu Key Path should not start with slash.
 
 	var params = {
 		Bucket: settings.bucket,
 		ACL: "public-read",
-		Key: s3KeyPath + uuid() + path.extname(filename),
+		Key: qiniuKeyPath + uuid() + path.extname(filename),
 		Body: buffer,
 		ContentLength: buffer.length,
 		ContentType: mime.lookup(filename)
 	};
 
-	S3().putObject(params, function (err) {
+	//TODO eqi, use qiniu put file API
+	getQiniuConn().putObject(params, function (err) {
 		if (err) {
 			return callback(makeError(err));
 		}
 
 		// amazon has https enabled, we use it by default
-		var host = "https://" + params.Bucket +".s3.amazonaws.com";
+		var host = "https://" + params.Bucket +".qiniu.amazonaws.com";
 		if (settings.host && 0 < settings.host.length) {
 			host = settings.host;
 			// host must start with http or https
@@ -340,9 +326,9 @@ var admin = plugin.admin = {};
 
 admin.menu = function (custom_header, callback) {
 	custom_header.plugins.push({
-		"route": "/plugins/s3-uploads",
+		"route": "/plugins/qiniu-uploads",
 		"icon": "fa-envelope-o",
-		"name": "S3 Uploads"
+		"name": "qiniu Uploads"
 	});
 
 	callback(null, custom_header);
